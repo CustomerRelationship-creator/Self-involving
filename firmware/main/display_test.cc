@@ -31,16 +31,28 @@ constexpr uint16_t kAmber = 0xFD20;
 }  // namespace
 
 esp_err_t DisplayTest::Initialize() {
-    spi_bus_config_t bus_config = GC9A01_PANEL_BUS_SPI_CONFIG(
-        board::kLcdSclk, board::kLcdMosi, kFrameBytes);
+    // Initialize every field explicitly through zero-initialization. The
+    // component helper macro targets an older spi_bus_config_t and trips IDF
+    // 6's missing-field warning when warnings are treated as errors.
+    spi_bus_config_t bus_config = {};
+    bus_config.mosi_io_num = board::kLcdMosi;
+    bus_config.miso_io_num = GPIO_NUM_NC;
+    bus_config.sclk_io_num = board::kLcdSclk;
+    bus_config.quadwp_io_num = GPIO_NUM_NC;
+    bus_config.quadhd_io_num = GPIO_NUM_NC;
+    bus_config.max_transfer_sz = kFrameBytes;
     ESP_RETURN_ON_ERROR(spi_bus_initialize(kLcdHost, &bus_config, SPI_DMA_CH_AUTO),
                         kTag, "initialize LCD SPI bus");
 
     esp_lcd_panel_io_handle_t io_handle = nullptr;
-    esp_lcd_panel_io_spi_config_t io_config = GC9A01_PANEL_IO_SPI_CONFIG(
-        board::kLcdCs, board::kLcdDc, nullptr, nullptr);
+    esp_lcd_panel_io_spi_config_t io_config = {};
+    io_config.cs_gpio_num = board::kLcdCs;
+    io_config.dc_gpio_num = board::kLcdDc;
+    io_config.spi_mode = 0;
     io_config.pclk_hz = board::kLcdPixelClockHz;
     io_config.trans_queue_depth = 4;
+    io_config.lcd_cmd_bits = 8;
+    io_config.lcd_param_bits = 8;
     ESP_RETURN_ON_ERROR(
         esp_lcd_new_panel_io_spi(
             reinterpret_cast<esp_lcd_spi_bus_handle_t>(

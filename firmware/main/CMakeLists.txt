@@ -6,6 +6,7 @@ idf_component_register(
     INCLUDE_DIRS "."
     REQUIRES
         driver
+        esp_app_format
         esp_driver_gpio
         esp_driver_i2c
         esp_driver_spi
