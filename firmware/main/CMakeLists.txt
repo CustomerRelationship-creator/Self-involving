@@ -14,4 +14,5 @@ idf_component_register(
         esp_psram
         esp_partition
         nvs_flash
+        spi_flash
 )
