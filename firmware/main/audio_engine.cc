@@ -125,6 +125,7 @@ esp_err_t AudioEngine::Start(MicrophoneFrameCallback callback, void* context) {
 void AudioEngine::SetMuted(bool muted) {
     muted_.store(muted);
     session_active_.store(false);
+    if (muted && playback_queue_ != nullptr) xQueueReset(playback_queue_);
     esp_codec_dev_set_in_mute(codec_, muted);
     esp_codec_dev_set_out_mute(codec_, true);
 }
@@ -168,10 +169,13 @@ void AudioEngine::CaptureTask() {
 void AudioEngine::PlaybackTask() {
     PcmFrame frame = {};
     while (true) {
-        if (xQueueReceive(playback_queue_, &frame, portMAX_DELAY) == pdPASS &&
+        if (xQueueReceive(playback_queue_, &frame, pdMS_TO_TICKS(250)) == pdPASS &&
             !muted_.load()) {
             esp_codec_dev_set_out_mute(codec_, false);
             esp_codec_dev_write(codec_, frame.data, frame.size);
+        } else {
+            // Bound the time the analogue output path remains active after a reply.
+            esp_codec_dev_set_out_mute(codec_, true);
         }
     }
 }
