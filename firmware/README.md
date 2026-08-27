@@ -1,25 +1,68 @@
-# Firmware
+# M0 hardware self-test firmware
 
-这里将存放面向 movecall-moji-esp32s3-enterprise 的原创 ESP-IDF 固件，不复制或依赖已安装设备的软件架构。具体技术取舍见 [原创固件决策](../docs/firmware-decisions.md)。
+This directory contains the first bootable firmware for the unflashed
+`movecall-moji-esp32s3-enterprise` device. It is intentionally limited to safe,
+reversible board diagnostics.
 
-## 计划模块
+## What it does
 
-- board：引脚、电源、背光、按键和板级自检
-- audio：ES8311、I²S、DMA、环形缓冲、ESP-SR AFE、VAD、WakeNet、AEC 与播放
-- display：GC9A01 驱动、真实状态界面和动画调度
-- transport：TLS WebSocket、会话协议、背压和重连
-- identity：设备绑定、凭证轮换与撤销
-- ota：双槽升级、自检、校验、回滚和恢复
-- app：状态机、事件总线、权限状态、日志和指标
+- keeps the speaker power amplifier disabled on every boot;
+- verifies the expected 16 MB Flash and 8 MB Octal PSRAM;
+- runs a 512 KB PSRAM write/read pattern test;
+- validates the custom partition table and records a bounded NVS boot counter;
+- probes the two expected ES8311 I2C addresses without changing codec registers;
+- initializes the official Espressif GC9A01 driver and displays color bands;
+- polls GPIO0: short press changes the screen test pattern, two-second press
+  toggles software mute/black screen;
+- logs internal RAM and PSRAM watermarks every ten seconds.
 
-## 构建约束
+It does **not** yet initialize I2S, play audio, connect Wi-Fi, upload microphone
+data, implement wake words, or contact a remote model.
 
-- 目标芯片 ESP32-S3，启用 8 MB Octal PSRAM 与 16 MB Flash。
-- 首个基线使用 ESP-IDF 6.0.2 和固定、可复现的工具链。
-- 保留双 OTA 应用槽、独立资源分区、本地诊断空间和迁移余量。
-- 单个应用镜像目标不超过 3.2 MB；持续空闲 PSRAM 不低于 1.5 MB。
-- 禁止在源码、固件资源或串口日志中嵌入服务密钥。
-- 每个硬件驱动先提供独立自检，再接入完整状态机。
-- 所有队列、缓存和日志都必须有硬上限与满载策略。
+## Requirements
 
-第一份代码应是最小硬件自检固件，而不是直接实现云端对话。
+- ESP-IDF 6.0.2
+- Espressif Component Manager with network access on the first build
+- USB-C data cable
+
+The build pins `espressif/esp_lcd_gc9a01` to 2.0.4. No model or animation asset
+is downloaded into the firmware.
+
+## First-device safety procedure
+
+Before writing anything, save the complete 16 MB Flash image:
+
+```bash
+esptool.py --chip esp32s3 --port /dev/cu.usbmodem21101 \
+  read_flash 0x0 0x1000000 second-device-factory-backup.bin
+```
+
+Also save `espefuse.py summary` output. Do not burn eFuses, enable Secure Boot,
+or enable Flash Encryption during M0.
+
+## Build and flash
+
+```bash
+cd firmware
+. "$IDF_PATH/export.sh"
+idf.py set-target esp32s3
+idf.py build
+idf.py -p /dev/cu.usbmodem21101 flash monitor
+```
+
+The first flash writes the bootloader, partition table and application. Later
+M0-only application updates can use `idf.py app-flash` after the partition table
+has been verified.
+
+## Expected display
+
+- green/white/blue bands: all critical non-display checks passed;
+- red/amber/black bands: at least one critical check failed;
+- LED on after a successful diagnostic pass;
+- the amplifier remains disabled in either case.
+
+Only use GPIO0 after the application has booted. Holding it while resetting the
+board selects the ESP32-S3 ROM download mode.
+
+The actual panel orientation, color order, backlight polarity, LED polarity and
+ES8311 address still require confirmation on the second physical device.
