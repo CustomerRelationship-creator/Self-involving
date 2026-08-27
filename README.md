@@ -13,6 +13,13 @@
 - 通过自定义协议连接远端推理与工具，不依赖 xiaozhi-esp32、旧 bridge 或其云服务。
 - 固件支持签名升级、双 OTA 回滚与出厂恢复。
 
+## 设计方向
+
+- [产品愿景：我想怎样进入现实世界](docs/product-vision.md)
+- [与 xiaozhi-esp32 v2.4.2 的对比](docs/xiaozhi-comparison.md)
+- [原创固件决策](docs/firmware-decisions.md)
+- [芽体 Sprout 外壳概念](docs/enclosure-concept.md)
+
 ## 硬件目标
 
 - ESP32-S3-WROOM-1-N16R8，16 MB Flash、8 MB Octal PSRAM
