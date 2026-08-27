@@ -1,99 +1,145 @@
+#include <atomic>
+#include <cinttypes>
 #include <cstdint>
 
+#include "audio_engine.h"
 #include "board_diagnostics.h"
 #include "board_pins.h"
+#include "device_config.h"
 #include "display_test.h"
 #include "driver/gpio.h"
-#include "esp_err.h"
 #include "esp_log.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
+#include "m3_state.h"
 #include "nvs_flash.h"
+#include "voice_transport.h"
+#include "wifi_manager.h"
 
 namespace {
+constexpr char kTag[] = "self_involving_m3";
+constexpr TickType_t kPoll = pdMS_TO_TICKS(20);
+constexpr TickType_t kLongPress = pdMS_TO_TICKS(2000);
+constexpr TickType_t kHealthPeriod = pdMS_TO_TICKS(10000);
+std::atomic<self_involving::DeviceState> g_state{
+    self_involving::DeviceState::kBooting};
+self_involving::AudioEngine* g_audio = nullptr;
+self_involving::VoiceTransport* g_transport = nullptr;
 
-constexpr char kTag[] = "self_involving";
-constexpr TickType_t kPollInterval = pdMS_TO_TICKS(20);
-constexpr TickType_t kLongPressDuration = pdMS_TO_TICKS(2000);
-constexpr TickType_t kHealthLogPeriod = pdMS_TO_TICKS(10000);
-
-bool AllCriticalChecksPassed(const self_involving::DiagnosticResult& result) {
-    return result.flash_ok && result.psram_ok && result.partitions_ok &&
-           result.nvs_ok && result.es8311_found;
+void MicrophoneFrame(const std::uint8_t* data, std::size_t size, void*) {
+    if (g_transport != nullptr) g_transport->QueueMicrophoneFrame(data, size);
 }
-
+void SpeakerFrame(const std::uint8_t* data, std::size_t size, void*) {
+    if (g_audio != nullptr) g_audio->QueueSpeakerAudio(data, size);
+}
+void RemoteState(self_involving::DeviceState state, void*) {
+    g_state.store(state);
+    if (state == self_involving::DeviceState::kIdleLocal && g_audio != nullptr) {
+        g_audio->SetSessionActive(false);
+    }
+}
 }  // namespace
 
 extern "C" void app_main(void) {
-    ESP_LOGI(kTag, "Self-involving M0 hardware self-test starting");
-
+    using self_involving::DeviceState;
+    ESP_LOGI(kTag, "Self-involving M3 voice body starting");
     ESP_ERROR_CHECK(self_involving::ConfigureSafeGpios());
-
-    const esp_err_t nvs_err = nvs_flash_init();
-    if (nvs_err != ESP_OK) {
-        // Never erase NVS automatically in a diagnostic firmware.
+    const esp_err_t nvs_error = nvs_flash_init();
+    if (nvs_error != ESP_OK) {
         ESP_LOGE(kTag, "NVS initialization failed without erase: %s",
-                 esp_err_to_name(nvs_err));
+                 esp_err_to_name(nvs_error));
     }
-
-    const self_involving::DiagnosticResult diagnostics =
-        self_involving::RunBoardDiagnostics();
-    const bool overall_ok = AllCriticalChecksPassed(diagnostics);
-
+    const auto diagnostics = self_involving::RunBoardDiagnostics();
+    const bool board_ok = diagnostics.flash_ok && diagnostics.psram_ok &&
+                          diagnostics.partitions_ok && diagnostics.nvs_ok &&
+                          diagnostics.es8311_found;
     self_involving::DisplayTest display;
-    const esp_err_t display_err = display.Initialize();
-    if (display_err == ESP_OK) {
-        ESP_ERROR_CHECK_WITHOUT_ABORT(display.ShowDiagnosticPattern(overall_ok));
-    } else {
-        ESP_LOGE(kTag, "Display test unavailable: %s",
-                 esp_err_to_name(display_err));
-    }
+    const esp_err_t display_error = display.Initialize();
+    if (display_error == ESP_OK) display.ShowState(DeviceState::kBooting);
 
-    const bool final_ok = overall_ok && display_err == ESP_OK;
-    gpio_set_level(self_involving::board::kStatusLed, final_ok ? 1 : 0);
-    ESP_LOGI(kTag,
-             "M0 result flash=%d psram=%d partitions=%d nvs=%d es8311=%d display=%d",
-             diagnostics.flash_ok, diagnostics.psram_ok,
-             diagnostics.partitions_ok, diagnostics.nvs_ok,
-             diagnostics.es8311_found, display_err == ESP_OK);
-    ESP_LOGW(kTag, "Power amplifier remains disabled; no audio is played in M0");
+    self_involving::AudioEngine audio;
+    g_audio = &audio;
+    static self_involving::VoiceTransport transport;
+    if (!board_ok || audio.Initialize() != ESP_OK ||
+        audio.Start(MicrophoneFrame, nullptr) != ESP_OK) {
+        g_state.store(DeviceState::kError);
+    } else {
+        const self_involving::DeviceConfig config =
+            self_involving::LoadDeviceConfig();
+        if (!config.complete) {
+            ESP_LOGW(kTag, "M3 configuration missing; use menuconfig or NVS provisioning");
+            g_state.store(DeviceState::kNeedsConfiguration);
+        } else {
+            g_state.store(DeviceState::kConnecting);
+            self_involving::WifiManager wifi;
+            if (wifi.Connect(config, 20000) != ESP_OK) {
+                g_state.store(DeviceState::kOffline);
+            } else {
+                g_transport = &transport;
+                if (transport.Initialize(config, SpeakerFrame, RemoteState,
+                                         nullptr) != ESP_OK ||
+                    transport.Connect(15000) != ESP_OK) {
+                    g_state.store(DeviceState::kOffline);
+                } else {
+                    g_state.store(DeviceState::kIdleLocal);
+                }
+            }
+        }
+    }
 
     bool muted = false;
     bool was_pressed = false;
     TickType_t pressed_at = 0;
-    TickType_t last_health_log = xTaskGetTickCount();
-
+    TickType_t last_health = xTaskGetTickCount();
+    DeviceState rendered = DeviceState::kBooting;
     while (true) {
         const TickType_t now = xTaskGetTickCount();
         const bool pressed =
             gpio_get_level(self_involving::board::kBootButton) == 0;
-
-        if (pressed && !was_pressed) {
-            pressed_at = now;
-        } else if (!pressed && was_pressed) {
+        if (pressed && !was_pressed) pressed_at = now;
+        else if (!pressed && was_pressed) {
             const TickType_t duration = now - pressed_at;
-            if (duration >= kLongPressDuration) {
+            if (duration >= kLongPress) {
                 muted = !muted;
-                gpio_set_level(self_involving::board::kPowerAmplifierEnable, 0);
-                gpio_set_level(self_involving::board::kStatusLed,
-                               muted ? 1 : final_ok);
-                if (display_err == ESP_OK) {
-                    ESP_ERROR_CHECK_WITHOUT_ABORT(
-                        muted ? display.ShowMuted()
-                              : display.ShowDiagnosticPattern(overall_ok));
+                if (g_transport != nullptr) g_transport->CancelSession();
+                audio.SetMuted(muted);
+                g_state.store(muted ? DeviceState::kMuted
+                                    : (g_transport != nullptr && g_transport->connected()
+                                           ? DeviceState::kIdleLocal
+                                           : DeviceState::kOffline));
+            } else if (!muted && g_transport != nullptr &&
+                       g_transport->connected()) {
+                const DeviceState current = g_state.load();
+                if (current == DeviceState::kListening ||
+                    current == DeviceState::kThinking ||
+                    current == DeviceState::kSpeaking) {
+                    g_transport->CancelSession();
+                    audio.SetSessionActive(false);
+                    g_state.store(DeviceState::kIdleLocal);
+                } else if (g_transport->StartSession() == ESP_OK) {
+                    audio.SetSessionActive(true);
+                    g_state.store(DeviceState::kListening);
                 }
-                ESP_LOGI(kTag, "Software mute state=%s", muted ? "on" : "off");
-            } else if (!muted && display_err == ESP_OK) {
-                ESP_ERROR_CHECK_WITHOUT_ABORT(display.CyclePattern());
-                ESP_LOGI(kTag, "Display pattern advanced");
             }
         }
         was_pressed = pressed;
-
-        if (now - last_health_log >= kHealthLogPeriod) {
-            self_involving::LogMemoryWatermarks();
-            last_health_log = now;
+        const DeviceState state = g_state.load();
+        if (state != rendered && display_error == ESP_OK) {
+            display.ShowState(state);
+            rendered = state;
+            ESP_LOGI(kTag, "state=%s", self_involving::DeviceStateName(state));
         }
-        vTaskDelay(kPollInterval);
+        gpio_set_level(self_involving::board::kStatusLed,
+                       state == DeviceState::kListening ||
+                       state == DeviceState::kSpeaking ||
+                       state == DeviceState::kMuted);
+        if (now - last_health >= kHealthPeriod) {
+            self_involving::LogMemoryWatermarks();
+            ESP_LOGI(kTag, "state=%s playback_drops=%" PRIu32,
+                     self_involving::DeviceStateName(state),
+                     audio.dropped_playback_frames());
+            last_health = now;
+        }
+        vTaskDelay(kPoll);
     }
 }

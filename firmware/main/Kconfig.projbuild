@@ -1,0 +1,28 @@
+menu "Self-involving M3"
+
+config M3_WIFI_SSID
+    string "Fallback Wi-Fi SSID"
+    default ""
+
+config M3_WIFI_PASSWORD
+    string "Fallback Wi-Fi password"
+    default ""
+
+config M3_GATEWAY_URI
+    string "Cognition gateway WebSocket URI"
+    default ""
+    help
+        Use a TLS URI such as wss://voice.example.com/v1/device.
+
+config M3_DEVICE_TOKEN
+    string "Revocable device token"
+    default ""
+    help
+        This is a per-device gateway credential, never a model-provider API key.
+
+config M3_OUTPUT_VOLUME
+    int "Speaker volume"
+    range 0 70
+    default 45
+
+endmenu

@@ -4,6 +4,7 @@
 #include <cstdint>
 
 #include "esp_err.h"
+#include "m3_state.h"
 
 namespace self_involving {
 
@@ -12,6 +13,7 @@ public:
     esp_err_t Initialize();
     esp_err_t ShowDiagnosticPattern(bool overall_ok);
     esp_err_t ShowMuted();
+    esp_err_t ShowState(DeviceState state);
     esp_err_t CyclePattern();
 
 private:

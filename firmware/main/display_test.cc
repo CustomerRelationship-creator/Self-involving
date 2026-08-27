@@ -104,6 +104,37 @@ esp_err_t DisplayTest::ShowMuted() {
     return Fill(kBlack);
 }
 
+esp_err_t DisplayTest::ShowState(DeviceState state) {
+    switch (state) {
+        case DeviceState::kBooting: {
+            const uint16_t colors[] = {kWhite, kBlue, kBlack};
+            return ShowBands(colors, 3);
+        }
+        case DeviceState::kNeedsConfiguration: {
+            const uint16_t colors[] = {kAmber, kBlack, kAmber};
+            return ShowBands(colors, 3);
+        }
+        case DeviceState::kConnecting: return Fill(kBlue);
+        case DeviceState::kIdleLocal: return Fill(kGreen);
+        case DeviceState::kListening: {
+            const uint16_t colors[] = {kGreen, kWhite, kGreen};
+            return ShowBands(colors, 3);
+        }
+        case DeviceState::kThinking: {
+            const uint16_t colors[] = {kBlue, kWhite, kBlue, kWhite};
+            return ShowBands(colors, 4);
+        }
+        case DeviceState::kSpeaking: {
+            const uint16_t colors[] = {kWhite, kGreen, kWhite};
+            return ShowBands(colors, 3);
+        }
+        case DeviceState::kMuted: return ShowMuted();
+        case DeviceState::kOffline: return Fill(kAmber);
+        case DeviceState::kError: return Fill(kRed);
+    }
+    return ESP_ERR_INVALID_ARG;
+}
+
 esp_err_t DisplayTest::CyclePattern() {
     static constexpr uint16_t kPatterns[][4] = {
         {kRed, kGreen, kBlue, kWhite},
